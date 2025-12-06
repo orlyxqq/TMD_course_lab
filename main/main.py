@@ -2,7 +2,7 @@ import numpy as np
 import math
 
 
-def create_transition_matrix(buffer_size, p, lambda_rate):
+def create_transition_matrix(buffer_size, lambda_rate):
     size = (buffer_size + 1)
     transition_matrix = np.zeros((size, size))
     for i in range(size):
@@ -49,7 +49,7 @@ def main():
     lambda_rate = np.linspace(0.1, 1.0 ,1)
     T = 10000 #таймслоты для симуляци
     p =[0.1, 0.2] #вероятность передачи сообщения абонентами
-    transition_matrix = create_transition_matrix(b, p[0], 0.2 )
+    transition_matrix = create_transition_matrix(b, 0.2 )
     
     print(transition_matrix)
     
