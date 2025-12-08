@@ -19,93 +19,69 @@
 
 
 import numpy as np 
-import math
 from collections import deque
+import itertools
 import tqdm
-from scipy.stats import poisson
-from itertools import product
 
 
-def state_to_index(state, b):
-    """Перевод состояния (n1,...,nM) в индекс"""
-    M = len(state)
-    index = 0
-    for i, n in enumerate(state):
-        index += n * (b+1)**(M-1-i)
-    return index
-
-def index_to_state(index, M, b):
-    """Перевод индекса в состояние"""
-    state = []
-    for i in range(M):
-        div = (b+1)**(M-1-i)
-        n = index // div
-        state.append(n)
-        index %= div
-    return tuple(state)
-
-def create_transition_matrix(lambda_rates, p_transmit_list, b):
+def create_transition_matrix(M, B, lambda_rate, p):
     """
-    Создание матрицы переходов для M абонентов
-    lambda_rates: list[float] λ_i
-    p_transmit_list: list[float] p_i
-    b: int, размер буфера каждого абонента
+    Универсальная матрица переходов для M абонентов и буфера B.
+    y[i] = exp(-lambda[i])
+    p[i] – вероятность успеха передачи.
     """
-    M = len(lambda_rates)
-    size = (b+1)**M
-    P = np.zeros((size, size))
 
-    # Перебираем все состояния системы
-    for state in product(range(b+1), repeat=M):
-        idx_from = state_to_index(state, b)
+    # --- вероятность появления сообщения ---
+    y = np.exp(-np.array(lambda_rate))
 
-        # --- Генерация всех возможных комбинаций прибывших пакетов ---
-        # Берем до b пакетов, можно оптимизировать ограничением
-        arrival_ranges = [range(b+1) for _ in range(M)]
+    # --- все состояния ---
+    states = list(itertools.product(range(B + 1), repeat=M))
+    S = len(states)
+    index = {s: i for i, s in enumerate(states)}
 
-        for arrivals in product(*arrival_ranges):
-            prob_arrival = 1.0
-            next_state = list(state)
+    P = np.zeros((S, S))
 
-            for i in range(M):
-                # Poisson вероятность k пакетов
-                k = arrivals[i]
-                if state[i] + k > b:
-                    k = b - state[i]  # обрезка буфера
-                prob_arrival *= poisson.pmf(k, lambda_rates[i])
-                next_state[i] = state[i] + k
+    for s_idx, state in enumerate(states):
 
-            # --- Выбор абонента для передачи пакета ---
-            contenders = [i for i in range(M) if state[i] > 0]
+        for T in range(M):                     # кто передаёт
+            for success in [0, 1]:             # успех передачи
+                for arrivals in itertools.product([0, 1], repeat=M):
 
-            success_probs = []
+                    # --- вероятность события ---
+                    prob = 1.0
 
-            # Генерируем все комбинации попыток передачи
-            # Каждая комбинация — бинарный вектор длины M
-            # prob_attempt[i] = p_i если пакет есть, иначе 0
-            attempts_probs = []
-            for i in range(M):
-                if state[i] > 0:
-                    attempts_probs.append([1 - p_transmit_list[i], p_transmit_list[i]])
-                else:
-                    attempts_probs.append([1.0, 0.0])
+                    # выбор передающего
+                    prob *= 1.0 / M
 
-            for attempt in product(*attempts_probs):
-                # Кто пытается передать
-                num_attempts = sum(attempt)
-                next_state_final = next_state.copy()
-                prob_attempt_comb = np.prod([ap for ap in attempt])
-                if num_attempts == 1:
-                    # успешная передача → уменьшаем соответствующий буфер
-                    idx_success = attempt.index(1)
-                    next_state_final[idx_success] = max(0, next_state_final[idx_success] - 1)
-                # иначе коллизия → никто не передает
+                    # успех/неудача передачи
+                    prob *= p[T] if success else (1 - p[T])
 
-                idx_to = state_to_index(next_state_final, b)
-                P[idx_from, idx_to] += prob_arrival * prob_attempt_comb
+                    # приходы сообщений
+                    for i in range(M):
+                        prob *= y[i] if arrivals[i] else (1 - y[i])
+
+                    if prob == 0:
+                        continue
+
+                    # --- формируем следующее состояние ---
+                    new_state = list(state)
+
+                    for i in range(M):
+
+                        # уход сообщения
+                        if i == T and state[i] > 0 and success:
+                            new_state[i] -= 1
+
+                        # приход сообщения
+                        if arrivals[i] == 1 and new_state[i] < B:
+                            new_state[i] += 1
+
+                    new_state = tuple(new_state)
+                    new_idx = index[new_state]
+
+                    P[s_idx, new_idx] += prob
 
     return P
-        
     
 
 def sim_metrics(arrival_rates, transmit_probs, buffer_size, time_windows):
@@ -177,19 +153,18 @@ def plot_graphics():
 
 def main():
     #(b + 1)^M < 20
+    
     M = 2 #абоненты  
     b = 1 #буфер
     
-    lambda_rate_i = [0.3, 0.2]
-    P_i = [0.1, 0.9] #вероятность передачи сообщения абонентами
-    
-    T = 10000 #таймслоты для симуляци
-    
+    lambda_rate_list = [1.0, 1.0]
+    p_transmit_list = [1.0, 1.0] #вероятность передачи сообщения абонентами
+    time_windows = 10000 #таймслоты для симуляци
     
     
-    teor_metrics_abonents = sim_metrics(lambda_rate_i, P_i, b, T)
-    teor_matrix = create_transition_matrix(lambda_rate_i, P_i, b)
-    print(teor_matrix)
+    teor_metrics_abonents = sim_metrics(lambda_rate_list, p_transmit_list, b, time_windows)
+    transition_matrix = create_transition_matrix(M, b, lambda_rate_list ,p_transmit_list)
+    print(transition_matrix)
     #print(teor_metrics_abonents)
     
     
