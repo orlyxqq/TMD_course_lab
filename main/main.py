@@ -22,151 +22,183 @@ import numpy as np
 from collections import deque
 import itertools
 import tqdm
+import numpy as np
+from itertools import product
+import math
 
+def poisson_prob(k, lam):
+    return math.exp(-lam) * lam**k / math.factorial(k)
 
-def create_transition_matrix(M, B, lambda_rate, p):
-    """
-    Универсальная матрица переходов для M абонентов и буфера B.
-    y[i] = exp(-lambda[i])
-    p[i] – вероятность успеха передачи.
-    """
+def create_transition_matrix(arrival_rates, transmit_probs, buffer_size):
+    
+    num_users = len(arrival_rates)
+    num_states = (buffer_size + 1) ** num_users
 
-    # --- вероятность появления сообщения ---
-    y = np.exp(-np.array(lambda_rate))
+    all_states = list(product(range(buffer_size + 1), repeat=num_users))
+    state_index = {s: i for i, s in enumerate(all_states)}
 
-    # --- все состояния ---
-    states = list(itertools.product(range(B + 1), repeat=M))
-    S = len(states)
-    index = {s: i for i, s in enumerate(states)}
+    P = np.zeros((num_states, num_states))
 
-    P = np.zeros((S, S))
+    for idx, state in enumerate(all_states):
 
-    for s_idx, state in enumerate(states):
+        
+        transmit_options = []
+        for i in range(num_users):
+            if state[i] > 0:
+                transmit_options.append([(0, 1 - transmit_probs[i]), (1, transmit_probs[i])])
+            else:
+                transmit_options.append([(0, 1.0)]) 
 
-        for T in range(M):                     # кто передаёт
-            for success in [0, 1]:             # успех передачи
-                for arrivals in itertools.product([0, 1], repeat=M):
+        for transmit_combo in product(*transmit_options):
+            
+            contenders = [i for i, t in enumerate(transmit_combo) if t[0] == 1]
+            
+            p_tx = np.prod([t[1] for t in transmit_combo])
 
-                    # --- вероятность события ---
-                    prob = 1.0
+            if len(contenders) <= 1:
+                transmitted = [0] * num_users
+                if len(contenders) == 1:
+                    transmitted[contenders[0]] = 1
+            else:
+                transmitted = [0] * num_users
 
-                    # выбор передающего
-                    prob *= 1.0 / M
+            state_after_tx = tuple(max(state[i] - transmitted[i], 0) for i in range(num_users))
 
-                    # успех/неудача передачи
-                    prob *= p[T] if success else (1 - p[T])
+            arrivals_list = []
+            for i, lam in enumerate(arrival_rates):
+                max_arrival = buffer_size - state_after_tx[i]
+                arrivals_prob = [poisson_prob(k, lam) for k in range(max_arrival + 1)]
+                arrivals_prob[-1] = 1 - sum(arrivals_prob[:-1])
+                arrivals_list.append(list(enumerate(arrivals_prob)))
 
-                    # приходы сообщений
-                    for i in range(M):
-                        prob *= y[i] if arrivals[i] else (1 - y[i])
-
-                    if prob == 0:
-                        continue
-
-                    # --- формируем следующее состояние ---
-                    new_state = list(state)
-
-                    for i in range(M):
-
-                        # уход сообщения
-                        if i == T and state[i] > 0 and success:
-                            new_state[i] -= 1
-
-                        # приход сообщения
-                        if arrivals[i] == 1 and new_state[i] < B:
-                            new_state[i] += 1
-
-                    new_state = tuple(new_state)
-                    new_idx = index[new_state]
-
-                    P[s_idx, new_idx] += prob
+            for arrivals_combo in product(*arrivals_list):
+                next_state = tuple(min(state_after_tx[i] + arrivals_combo[i][0], buffer_size)
+                                   for i in range(num_users))
+                p_arr = np.prod([arrivals_combo[i][1] for i in range(num_users)])
+                P[idx, state_index[next_state]] += p_tx * p_arr
 
     return P
-    
 
 def sim_metrics(arrival_rates, transmit_probs, buffer_size, time_windows):
 
     num_users = len(arrival_rates)
 
-    # Очереди
     queues = [deque(maxlen=buffer_size) for _ in range(num_users)]
-
-    processed = [0] * num_users
-    dropped = [0] * num_users
+    processed_requests = [0] * num_users
     total_delay = [0.0] * num_users
     avg_queue_over_time = [[] for _ in range(num_users)]
 
     for current_window in tqdm.tqdm(range(time_windows), ncols=80, desc="Simulation"):
 
         window_start = current_window
-        window_end = current_window + 1
+        window_end = window_start + 1
 
-        for i in range(num_users):
-            n_arr = np.random.poisson(arrival_rates[i])
+        contenders = []
+        for u in range(num_users):
+            if queues[u] and np.random.rand() < transmit_probs[u]:
+                contenders.append(u)
+
+        if len(contenders) == 1:
+            u = contenders[0]
+            arrival_time = queues[u].popleft()
+            delay = (window_end - arrival_time) 
+            total_delay[u] += delay
+            processed_requests[u] += 1
+
+        for u in range(num_users):
+            n_arr = np.random.poisson(arrival_rates[u])
             if n_arr > 0:
                 arr_times = np.random.uniform(window_start, window_end, n_arr)
                 arr_times.sort()
-
                 for t in arr_times:
-                    if len(queues[i]) < buffer_size:
-                        queues[i].append(t)
-                    else:
-                        dropped[i] += 1
+                    if len(queues[u]) < buffer_size:
+                        queues[u].append(t)
 
-            avg_queue_over_time[i].append(len(queues[i]))
-
-        contenders = []   # абоненты, которые пытаются передать
-
-        for i in range(num_users):
-            if queues[i] and np.random.rand() < transmit_probs[i]:
-                contenders.append(i)
-
-        if len(contenders) == 1:
-            user = contenders[0]
-            arrival_time = queues[user].popleft()
-
-            delay = (window_end - arrival_time) + 1
-            total_delay[user] += delay
-            processed[user] += 1
+        for u in range(num_users):
+            avg_queue_over_time[u].append(len(queues[u]))
 
     avg_delay = [
-        total_delay[i] / processed[i] if processed[i] > 0 else 0.0
-        for i in range(num_users)
+        total_delay[u] / processed_requests[u] if processed_requests[u] > 0 else 0.0
+        for u in range(num_users)
     ]
-
     avg_queue = [
-        sum(avg_queue_over_time[i]) / len(avg_queue_over_time[i])
-        for i in range(num_users)
+        sum(avg_queue_over_time[u]) / len(avg_queue_over_time[u])
+        for u in range(num_users)
     ]
 
     return {
         'svd': avg_delay,
-        'svr': avg_queue,
-        'dropped': dropped
+        'svr': avg_queue
     }
+def teor_metrics(transition_matrix, arrival_rates, transmit_probs, buffer_size):
 
-def teor_metrics(): 
-    pass
+    P = np.asarray(transition_matrix)
+    n = P.shape[0]
 
-def plot_graphics():
-    pass
+    A = P.T - np.eye(n)
+    A[-1, :] = 1.0
+    b = np.zeros(n)
+    b[-1] = 1.0
+    pi = np.linalg.solve(A, b)  
+
+    num_users = len(transmit_probs)
+    all_states = list(product(range(buffer_size + 1), repeat=num_users)) 
+
+    avg_queue = []
+    for u in range(num_users):
+        q_u = sum(pi[i] * all_states[i][u] for i in range(n))
+        avg_queue.append(q_u)
+
+    throughput = []
+    for u in range(num_users):
+        th_u = 0.0
+        p_u = transmit_probs[u]
+        for i, state in enumerate(all_states):
+            if state[u] == 0:
+                continue
+            prob_others_not_tx = 1.0
+            for j in range(num_users):
+                if j == u:
+                    continue
+                if state[j] > 0:
+                    prob_others_not_tx *= (1.0 - transmit_probs[j])
+                else:
+                    prob_others_not_tx *= 1.0
+            success_prob = p_u * prob_others_not_tx
+            th_u += pi[i] * success_prob
+        throughput.append(th_u)
+
+
+    avg_delay = []
+    for u in range(num_users):
+        if throughput[u] > 0:
+            avg_delay.append((avg_queue[u] / throughput[u])+0.5)
+        else:
+            avg_delay.append(0.0)
+
+    return {
+        'tvd': avg_delay,      
+        'tvr': avg_queue,      
+    }
 
 def main():
     #(b + 1)^M < 20
     
     M = 2 #абоненты  
-    b = 1 #буфер
+    b = 2 #буфер
     
-    lambda_rate_list = [1.0, 1.0]
-    p_transmit_list = [1.0, 1.0] #вероятность передачи сообщения абонентами
-    time_windows = 10000 #таймслоты для симуляци
+    lambda_rate_list = [0.7, 0.7, 0.7] #входная интенсивность
+    p_transmit_list = [1/3, 1/3, 1/3] #вероятность передачи сообщения абонентами
+    time_windows = 100000 #таймслоты
     
     
-    teor_metrics_abonents = sim_metrics(lambda_rate_list, p_transmit_list, b, time_windows)
-    transition_matrix = create_transition_matrix(M, b, lambda_rate_list ,p_transmit_list)
+    sim_metrics_abonents = sim_metrics(lambda_rate_list, p_transmit_list, b, time_windows)
+    transition_matrix = create_transition_matrix(lambda_rate_list ,p_transmit_list, b)
+    teor_metrics_abonents = teor_metrics(transition_matrix, lambda_rate_list, p_transmit_list, b)
+    
     print(transition_matrix)
-    #print(teor_metrics_abonents)
-    
+    print(sim_metrics_abonents)
+    print(teor_metrics_abonents)
     
     
 if __name__ == "__main__":
