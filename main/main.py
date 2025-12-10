@@ -25,6 +25,7 @@ import tqdm
 import numpy as np
 from itertools import product
 import math
+import matplotlib.pyplot as plt
 
 def poisson_prob(k, lam):
     return math.exp(-lam) * lam**k / math.factorial(k)
@@ -88,7 +89,7 @@ def sim_metrics(arrival_rates, transmit_probs, buffer_size, time_windows):
     total_delay = [0.0] * num_users
     avg_queue_over_time = [[] for _ in range(num_users)]
 
-    for current_window in tqdm.tqdm(range(time_windows), ncols=80, desc="Simulation"):
+    for current_window in tqdm.tqdm(range(time_windows), ncols=80, desc="magic"):
 
         window_start = current_window
         window_end = window_start + 1
@@ -172,7 +173,7 @@ def teor_metrics(transition_matrix, arrival_rates, transmit_probs, buffer_size):
     avg_delay = []
     for u in range(num_users):
         if throughput[u] > 0:
-            avg_delay.append((avg_queue[u] / throughput[u])+0.5)
+            avg_delay.append((avg_queue[u] / throughput[u]))
         else:
             avg_delay.append(0.0)
 
@@ -181,26 +182,74 @@ def teor_metrics(transition_matrix, arrival_rates, transmit_probs, buffer_size):
         'tvr': avg_queue,      
     }
 
+
 def main():
     #(b + 1)^M < 20
     
-    M = 2 #абоненты  
-    b = 2 #буфер
+    M = 3 #абоненты  
+    b = 1 #буфер
     
-    lambda_rate_list = [0.7, 0.7, 0.7] #входная интенсивность
+    # lambda_rate_list = [0.7, 0.7, 0.7] #входная интенсивность
     p_transmit_list = [1/3, 1/3, 1/3] #вероятность передачи сообщения абонентами
-    time_windows = 100000 #таймслоты
+    # time_windows = 100000 #таймслоты
     
     
-    sim_metrics_abonents = sim_metrics(lambda_rate_list, p_transmit_list, b, time_windows)
-    transition_matrix = create_transition_matrix(lambda_rate_list ,p_transmit_list, b)
-    teor_metrics_abonents = teor_metrics(transition_matrix, lambda_rate_list, p_transmit_list, b)
+    # sim_metrics_abonents = sim_metrics(lambda_rate_list, p_transmit_list, b, time_windows)
+    # transition_matrix = create_transition_matrix(lambda_rate_list ,p_transmit_list, b)
+    # teor_metrics_abonents = teor_metrics(transition_matrix, lambda_rate_list, p_transmit_list, b)
     
-    print(transition_matrix)
-    print(sim_metrics_abonents)
-    print(teor_metrics_abonents)
+    # print(transition_matrix)
+    # print(sim_metrics_abonents)
+    # print(teor_metrics_abonents)
     
-    
+    lambda_values = np.linspace(0.1, 1.0, 10)
+
+    sim_delay = [[] for _ in range(M)]
+    teor_delay = [[] for _ in range(M)]
+    sim_queue = [[] for _ in range(M)]
+    teor_queue = [[] for _ in range(M)]
+
+    time_windows = 20000 
+
+    for lam in lambda_values:
+        lambda_rate_list = [lam] * M
+
+        sim_res = sim_metrics(lambda_rate_list, p_transmit_list, b, time_windows)
+
+        P = create_transition_matrix(lambda_rate_list, p_transmit_list, b)
+        teor_res = teor_metrics(P, lambda_rate_list, p_transmit_list, b)
+
+        for u in range(M):
+            sim_delay[u].append(sim_res['svd'][u])
+            teor_delay[u].append(teor_res['tvd'][u])
+            sim_queue[u].append(sim_res['svr'][u])
+            teor_queue[u].append(teor_res['tvr'][u])
+
+
+
+    plt.figure(figsize=(7,5))
+    for u in range(M):
+        plt.plot(lambda_values, teor_delay[u], label=f"Теория, абонент {u+1}")
+        plt.plot(lambda_values, sim_delay[u], '--', label=f"Симуляция, абонент {u+1}")
+    plt.title("Средняя задержка")
+    plt.xlabel("λ")
+    plt.ylabel("средняя задержка")
+    plt.grid(True)
+    plt.legend()
+    plt.show()
+
+    plt.figure(figsize=(7,5))
+    for u in range(M):
+        plt.plot(lambda_values, teor_queue[u], label=f"Теория, абонент {u+1}")
+        plt.plot(lambda_values, sim_queue[u], '--', label=f"Симуляция, абонент {u+1}")
+    plt.title("Среднее число сообщений")
+    plt.xlabel("λ")
+    plt.ylabel("Среднее число сообщений")
+    plt.grid(True)
+    plt.legend()
+    plt.show()
+
+
 if __name__ == "__main__":
     main()
     
