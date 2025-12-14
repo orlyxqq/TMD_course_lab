@@ -6,7 +6,7 @@
 4) На вход каждого абонента поступает Пуассоновский входной поток сообщений с 
 интенсивностью (𝜆1,𝜆2,…,𝜆𝑀) 
 Описать работу системы с помощью многомерной Марковской цепи зафиксировав 𝑀 и 𝑏 
-таким образом, чтобы (𝑏 + 1)𝑀 < 20. Каждое состояние Марковской цепи — это вектор 
+таким образом, чтобы (𝑏 + 1)^𝑀 < 20. Каждое состояние Марковской цепи — это вектор 
 длинны 𝑀, компоненты вектора это количеством сообщений в буфере у абонентов. 
 Значения 𝑀 и 𝑏 согласовать с преподавателем. Сформировать матрицу переходных 
 вероятностей вручную для конкретных 𝑀 и 𝑏. 
@@ -126,10 +126,12 @@ def sim_metrics(arrival_rates, transmit_probs, buffer_size, time_windows):
         sum(avg_queue_over_time[u]) / len(avg_queue_over_time[u])
         for u in range(num_users)
     ]
+    lambd_out = [processed_requests[u] / time_windows for u in range(num_users)]
 
     return {
         'svd': avg_delay,
-        'svr': avg_queue
+        'svr': avg_queue,
+        'lambdout': lambd_out
     }
 def teor_metrics(transition_matrix, arrival_rates, transmit_probs, buffer_size):
 
@@ -140,46 +142,52 @@ def teor_metrics(transition_matrix, arrival_rates, transmit_probs, buffer_size):
     A[-1, :] = 1.0
     b = np.zeros(n)
     b[-1] = 1.0
-    pi = np.linalg.solve(A, b)  
+    pi = np.linalg.solve(A, b)
 
     num_users = len(transmit_probs)
-    all_states = list(product(range(buffer_size + 1), repeat=num_users)) 
+    all_states = list(product(range(buffer_size + 1), repeat=num_users))
 
+    # 1. Среднее число сообщений в буфере
     avg_queue = []
     for u in range(num_users):
         q_u = sum(pi[i] * all_states[i][u] for i in range(n))
         avg_queue.append(q_u)
 
-    throughput = []
+    # 2. Выходная интенсивность λ_out (throughput)
+    lambd_out = []
     for u in range(num_users):
         th_u = 0.0
         p_u = transmit_probs[u]
         for i, state in enumerate(all_states):
+
             if state[u] == 0:
                 continue
+
             prob_others_not_tx = 1.0
             for j in range(num_users):
                 if j == u:
                     continue
                 if state[j] > 0:
-                    prob_others_not_tx *= (1.0 - transmit_probs[j])
-                else:
-                    prob_others_not_tx *= 1.0
+                    prob_others_not_tx *= (1 - transmit_probs[j])
+
             success_prob = p_u * prob_others_not_tx
             th_u += pi[i] * success_prob
-        throughput.append(th_u)
 
 
+        lambd_out.append(th_u)
+
+    # 3. Средняя задержка (Little’s law + 0.5)
     avg_delay = []
     for u in range(num_users):
-        if throughput[u] > 0:
-            avg_delay.append((avg_queue[u] / throughput[u]))
+        if lambd_out[u] > 0:
+            avg_delay.append(avg_queue[u] / lambd_out[u] + 0.5)
         else:
             avg_delay.append(0.0)
 
     return {
-        'tvd': avg_delay,      
-        'tvr': avg_queue,      
+        'tvd': avg_delay,          # задержка
+        'tvr': avg_queue,          # среднее число сообщений
+        'lambdout': lambd_out     
     }
 
 
@@ -187,10 +195,10 @@ def main():
     #(b + 1)^M < 20
     
     M = 3 #абоненты  
-    b = 1 #буфер
+    b = 2 #буфер
     
     # lambda_rate_list = [0.7, 0.7, 0.7] #входная интенсивность
-    p_transmit_list = [1/3, 1/3, 1/3] #вероятность передачи сообщения абонентами
+    p_transmit_list = [1/2, 1/5, 1/5] #вероятность передачи сообщения абонентами
     # time_windows = 100000 #таймслоты
     
     
@@ -208,11 +216,17 @@ def main():
     teor_delay = [[] for _ in range(M)]
     sim_queue = [[] for _ in range(M)]
     teor_queue = [[] for _ in range(M)]
+    sim_lambdas = [[] for _ in range(M)]
+    teor_lambdas = [[] for _ in range(M)]
 
     time_windows = 20000 
 
     for lam in lambda_values:
         lambda_rate_list = [lam] * M
+        lambda_rate_list[1] = 0.05
+        lambda_rate_list[2] = 0.05
+        print(lambda_rate_list)
+        
 
         sim_res = sim_metrics(lambda_rate_list, p_transmit_list, b, time_windows)
 
@@ -224,6 +238,9 @@ def main():
             teor_delay[u].append(teor_res['tvd'][u])
             sim_queue[u].append(sim_res['svr'][u])
             teor_queue[u].append(teor_res['tvr'][u])
+            sim_lambdas[u].append(sim_res['lambdout'][u])
+            teor_lambdas[u].append(teor_res['lambdout'][u])
+    
 
 
 
@@ -248,13 +265,17 @@ def main():
     plt.grid(True)
     plt.legend()
     plt.show()
-
+    
+    plt.figure(figsize=(7,5))
+    for u in range(M):
+        plt.plot(lambda_values, teor_lambdas[u], label=f"Теория λ_out абонент {u+1}")
+        plt.plot(lambda_values, sim_lambdas[u], '--', label=f"Симуляция λ_out абонент {u+1}")
+    plt.title("Выходная интенсивность λ_out")
+    plt.xlabel("λ_in")
+    plt.ylabel("λ_out")
+    plt.grid(True)
+    plt.legend()
+    plt.show()
 
 if __name__ == "__main__":
     main()
-    
-    
- 
-  
-    
-
